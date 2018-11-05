@@ -167,7 +167,7 @@ class db_backup(models.Model):
                 s = paramiko.SSHClient()
                 s.set_missing_host_key_policy(paramiko.AutoAddPolicy())
                 s.connect(ipHost, portHost, usernameLogin, passwordLogin, timeout=10)
-                sftp = s.open_sftp()
+                s.open_sftp()
                 messageTitle = _("Connection Test Succeeded!\nEverything seems properly set up for FTP back-ups!")
             except Exception as e:
                 _logger.critical('There was a problem connecting to the remote ftp: ' + str(e))
@@ -202,19 +202,12 @@ class db_backup(models.Model):
                 # Create name for dumpfile.
                 bkp_file = '%s_%s.%s' % (time.strftime('%Y_%m_%d_%H_%M_%S'), rec.name, rec.backup_type)
                 file_path = os.path.join(rec.folder, bkp_file)
-                uri = 'http://' + rec.host + ':' + rec.port
-                conn = xmlrpclib.ServerProxy(uri + '/xmlrpc/db')
-                bkp = ''
                 try:
                     # try to backup database and write it away
                     with open(file_path, 'wb') as fp:
-                        # odoo.service.db.dump_db(rec.name, fp, rec.backup_type)
                         dump_db(rec.name, fp, rec.backup_type)
-                except Exception as error:
-                    _logger.debug(
-                        "Couldn't backup database %s. Bad database administrator password for server running at http://%s:%s" % (
-                        rec.name, rec.host, rec.port))
-                    _logger.debug("Exact error from the exception: " + str(error))
+                except (Exception, PermissionError) as error:
+                    _logger.error("Exact error from the exception: " + str(error))
                     continue
 
             else:
