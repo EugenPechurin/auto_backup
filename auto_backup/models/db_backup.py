@@ -207,17 +207,15 @@ class db_backup(models.Model):
                 bkp = ''
                 try:
                     # try to backup database and write it away
-                    fp = open(file_path, 'wb')
-                    # odoo.service.db.dump_db(rec.name, fp, rec.backup_type)
-                    dump_db(rec.name, fp, rec.backup_type)
+                    with open(file_path, 'wb') as fp:
+                        # odoo.service.db.dump_db(rec.name, fp, rec.backup_type)
+                        dump_db(rec.name, fp, rec.backup_type)
                 except Exception as error:
                     _logger.debug(
                         "Couldn't backup database %s. Bad database administrator password for server running at http://%s:%s" % (
                         rec.name, rec.host, rec.port))
                     _logger.debug("Exact error from the exception: " + str(error))
                     continue
-                finally:
-                    fp.close()
 
             else:
                 _logger.debug("database %s doesn't exist on http://%s:%s" % (rec.name, rec.host, rec.port))
