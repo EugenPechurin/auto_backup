@@ -3,22 +3,20 @@
 from odoo import models, fields, api, tools, _
 from odoo.exceptions import Warning
 import odoo
-from odoo.http import content_disposition
 
 import logging
 _logger = logging.getLogger(__name__)
-from ftplib import FTP
 import os
 import datetime
-
+import shutil
+import json
+import tempfile
 try:
     from xmlrpc import client as xmlrpclib
 except ImportError:
     import xmlrpclib
 import time
-import base64
 import socket
-
 
 try:
     import paramiko
@@ -28,7 +26,6 @@ except ImportError:
 
 
 def execute(connector, method, *args):
-    res = False
     try:
         res = getattr(connector, method)(*args)
     except socket.error as error:
@@ -37,15 +34,65 @@ def execute(connector, method, *args):
     return res
 
 
+def dump_db_manifest(cr):
+    pg_version = "%d.%d" % divmod(cr._obj.connection.server_version / 100, 100)
+    cr.execute("SELECT name, latest_version FROM ir_module_module WHERE state = 'installed'")
+    modules = dict(cr.fetchall())
+    manifest = {
+        'odoo_dump': '1',
+        'db_name': cr.dbname,
+        'version': odoo.release.version,
+        'version_info': odoo.release.version_info,
+        'major_version': odoo.release.major_version,
+        'pg_version': pg_version,
+        'modules': modules,
+    }
+    return manifest
+
+
+def dump_db(db_name, stream, backup_format='zip'):
+    """Dump database `db` into file-like object `stream` if stream is None
+    return a file object with the dump """
+
+    _logger.info('DUMP DB: %s format %s', db_name, backup_format)
+
+    cmd = ['pg_dump', '--no-owner']
+    cmd.append(db_name)
+
+    if backup_format == 'zip':
+        with odoo.tools.osutil.tempdir() as dump_dir:
+            filestore = odoo.tools.config.filestore(db_name)
+            if os.path.exists(filestore):
+                shutil.copytree(filestore, os.path.join(dump_dir, 'filestore'))
+            with open(os.path.join(dump_dir, 'manifest.json'), 'w') as fh:
+                db = odoo.sql_db.db_connect(db_name)
+                with db.cursor() as cr:
+                    json.dump(dump_db_manifest(cr), fh, indent=4)
+            cmd.insert(-1, '--file=' + os.path.join(dump_dir, 'dump.sql'))
+            odoo.tools.exec_pg_command(*cmd)
+            if stream:
+                odoo.tools.osutil.zip_dir(dump_dir, stream, include_dir=False, fnct_sort=lambda file_name: file_name != 'dump.sql')
+            else:
+                t=tempfile.TemporaryFile()
+                odoo.tools.osutil.zip_dir(dump_dir, t, include_dir=False, fnct_sort=lambda file_name: file_name != 'dump.sql')
+                t.seek(0)
+                return t
+    else:
+        cmd.insert(-1, '--format=c')
+        stdin, stdout = odoo.tools.exec_pg_command_pipe(*cmd)
+        if stream:
+            shutil.copyfileobj(stdout, stream)
+        else:
+            return stdout
+
+
 class db_backup(models.Model):
     _name = 'db.backup'
 
     @api.multi
-    def get_db_list(self, host, port, context={}):
-        uri = 'http://' + host + ':' + port
-        conn = xmlrpclib.ServerProxy(uri + '/xmlrpc/db')
-        db_list = execute(conn, 'list')
-        return db_list
+    def get_db_list(self):
+        dbs = odoo.service.db.list_dbs(True)
+        return dbs
 
     @api.multi
     def _get_db_name(self):
@@ -90,7 +137,7 @@ class db_backup(models.Model):
     def _check_db_exist(self):
         self.ensure_one()
 
-        db_list = self.get_db_list(self.host, self.port)
+        db_list = self.get_db_list()
         if self.name in db_list:
             return True
         return False
@@ -108,7 +155,7 @@ class db_backup(models.Model):
         has_failed = False
 
         for rec in self:
-            db_list = self.get_db_list(rec.host, rec.port)
+            db_list = self.get_db_list()
             pathToWriteTo = rec.sftp_path
             ipHost = rec.sftp_host
             portHost = rec.sftp_port
@@ -144,7 +191,7 @@ class db_backup(models.Model):
         conf_ids = self.search([])
 
         for rec in conf_ids:
-            db_list = self.get_db_list(rec.host, rec.port)
+            db_list = self.get_db_list()
 
             if rec.name in db_list:
                 try:
@@ -161,14 +208,16 @@ class db_backup(models.Model):
                 try:
                     # try to backup database and write it away
                     fp = open(file_path, 'wb')
-                    odoo.service.db.dump_db(rec.name, fp, rec.backup_type)
-                    fp.close()
+                    # odoo.service.db.dump_db(rec.name, fp, rec.backup_type)
+                    dump_db(rec.name, fp, rec.backup_type)
                 except Exception as error:
                     _logger.debug(
                         "Couldn't backup database %s. Bad database administrator password for server running at http://%s:%s" % (
                         rec.name, rec.host, rec.port))
                     _logger.debug("Exact error from the exception: " + str(error))
                     continue
+                finally:
+                    fp.close()
 
             else:
                 _logger.debug("database %s doesn't exist on http://%s:%s" % (rec.name, rec.host, rec.port))
