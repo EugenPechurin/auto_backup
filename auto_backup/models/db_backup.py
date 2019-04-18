@@ -88,6 +88,7 @@ def dump_db(db_name, stream, backup_format='zip'):
 
 class db_backup(models.Model):
     _name = 'db.backup'
+    _description = 'Backup Settings'
 
     @api.multi
     def get_db_list(self):
